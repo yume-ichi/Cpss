@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CPSテスト（1000ms・1ms）</title>
+<style>
+:root{--bg:#f4f1ea;--fg:#1d1d1f;--sub:#6b6b70;--accent:#e4572e;--bar:#d9d4c7;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17171a;--fg:#f2f2f3;--sub:#9a9aa2;--accent:#ff7a50;--bar:#2c2c32}}
+:root[data-theme="dark"]{--bg:#17171a;--fg:#f2f2f3;--sub:#9a9aa2;--accent:#ff7a50;--bar:#2c2c32}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden;overscroll-behavior:none;background:var(--bg);color:var(--fg);font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;-webkit-user-select:none;user-select:none;touch-action:none;-webkit-tap-highlight-color:transparent}
+#cv{position:fixed;inset:0;width:100%;height:100%;pointer-events:none}
+#area{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;cursor:pointer;text-align:center;padding:24px 24px 34% ;overflow:hidden}
+.label{font-size:14px;letter-spacing:.2em;color:var(--sub)}
+#count{font-size:min(30vw,180px);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+#time{font-size:28px;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700}
+#msg{font-size:17px;color:var(--sub);max-width:28em}
+#bar{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);height:8px;background:var(--bar);z-index:2}
+#fill{height:100%;width:100%;background:var(--accent);transform-origin:left}
+#result{display:none;flex-direction:column;align-items:center;gap:6px}
+#cps{font-size:min(20vw,120px);font-weight:800;color:var(--accent);line-height:1}
+#detail{font-size:15px;color:var(--sub)}
+button{margin-top:10px;font:inherit;font-size:18px;font-weight:700;padding:12px 34px;border:0;border-radius:999px;background:var(--fg);color:var(--bg);cursor:pointer}
+#best{position:fixed;top:calc(18px + env(safe-area-inset-top,0px));font-size:14px;color:var(--sub)}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="bar"><div id="fill"></div></div>
+<div id="area">
+  <div id="best"></div>
+  <div class="label">CLICK PER SECOND</div>
+  <div id="count">0</div>
+  <div id="time">1.000 秒</div>
+  <div id="msg">画面のどこでもクリック（タップ）で開始！スペースキーも使えます。画面の横幅＝1000ms、1目盛り＝1ms</div>
+  <div id="result">
+    <div class="label">結果</div>
+    <div id="cps">0.0</div>
+    <div id="detail"></div>
+    <button id="retry">もう一度</button>
+  </div>
+</div>
+<script>
+(function(){
+  var D=1000, cv=document.getElementById('cv'), g=cv.getContext('2d'),
+      area=document.getElementById('area'), countEl=document.getElementById('count'),
+      timeEl=document.getElementById('time'), msg=document.getElementById('msg'),
+      fill=document.getElementById('fill'), result=document.getElementById('result'),
+      cpsEl=document.getElementById('cps'), detail=document.getElementById('detail'),
+      bestEl=document.getElementById('best'), retry=document.getElementById('retry');
+  var state='idle', n=0, t0=0, raf=0, lockUntil=0, best=0, marks=new Uint8Array(D), ts=[], elapsed=0, W=0, H=0, dpr=1;
+  try{best=parseFloat(localStorage.getItem('cps-best-1000'))||0}catch(e){}
+  function showBest(){bestEl.textContent=best?('ベスト：'+best.toFixed(2)+' CPS'):''}
+  showBest();
+  function resize(){
+    dpr=window.devicePixelRatio||1;W=Math.round(innerWidth*dpr);H=Math.round(innerHeight*dpr);
+    cv.width=W;cv.height=H;draw();
+  }
+  function draw(){
+    var cs=getComputedStyle(document.documentElement), acc=cs.getPropertyValue('--accent'), sub=cs.getPropertyValue('--sub'), fg=cs.getPropertyValue('--fg'), bar=cs.getPropertyValue('--bar');
+    g.clearRect(0,0,W,H);
+    var y0=H*0.64, y1=H*0.92;
+    g.fillStyle=bar;g.globalAlpha=.35;g.fillRect(0,y0,W,y1-y0);g.globalAlpha=1;
+    g.font=(11*dpr)+'px system-ui,sans-serif';g.textBaseline='top';
+    for(var s=0;s<=10;s++){
+      var x=s/10*W;g.fillStyle=bar;g.fillRect(Math.min(x,W-dpr),y0-6*dpr,dpr,(y1-y0)+12*dpr);
+      if(s%2===0){g.fillStyle=sub;g.textAlign=s===10?'right':'left';g.fillText(s*100+'ms',x+(s===10?-3:3)*dpr,y1+8*dpr)}
+    }
+    var cw=Math.max(1.5*dpr,W/D);g.fillStyle='#ff8c1a';g.globalAlpha=.6;
+    for(var i=0;i<D;i++){if(marks[i])g.fillRect(i/D*W,0,cw,H)}
+    g.globalAlpha=1;g.fillStyle=fg;
+    if(state!=='idle'){var px=Math.min(elapsed,D)/D*W;g.fillRect(px,0,2*dpr,H)}
+  }
+  function rank(c){
+    if(c<4)return 'ウォーミングアップ中';
+    if(c<6)return '平均的なスピード';
+    if(c<8)return '速い！';
+    if(c<10)return 'かなりの上級者';
+    if(c<13)return 'ほぼ人間離れ';
+    return '伝説級';
+  }
+  function reset(){
+    state='idle';n=0;ts=[];marks.fill(0);elapsed=0;cancelAnimationFrame(raf);
+    countEl.textContent='0';timeEl.textContent='1.000 秒';fill.style.transform='scaleX(1)';
+    msg.style.display='';result.style.display='none';timeEl.style.display='';
+    draw();
+  }
+  function tick(){
+    elapsed=performance.now()-t0;var left=Math.max(0,D-elapsed);
+    timeEl.textContent=(left/1000).toFixed(3)+' 秒';
+    fill.style.transform='scaleX('+(left/D)+')';
+    draw();
+    if(left<=0){finish();return}
+    raf=requestAnimationFrame(tick);
+  }
+  function finish(){
+    state='done';lockUntil=performance.now()+700;elapsed=D;
+    var c=n/(D/1000), mn=Infinity, i;
+    for(i=1;i<ts.length;i++)mn=Math.min(mn,ts[i]-ts[i-1]);
+    countEl.textContent=n;timeEl.style.display='none';msg.style.display='none';
+    result.style.display='flex';cpsEl.textContent=c.toFixed(2);
+    detail.textContent=n+' クリック / 1秒　'+rank(c)+(ts.length>1?'　最短間隔 '+mn.toFixed(1)+'ms':'');
+    if(c>best){best=c;try{localStorage.setItem('cps-best-1000',String(c))}catch(e){}}
+    showBest();draw();
+  }
+  function hit(now){
+    if(state==='done')return;
+    if(state==='idle'){state='run';t0=now;msg.style.display='none';raf=requestAnimationFrame(tick)}
+    var t=now-t0;
+    if(t>=D)return;
+    n++;countEl.textContent=n;ts.push(t);
+    var i=Math.floor(t);if(marks[i]<255)marks[i]++;
+    draw();
+  }
+  area.addEventListener('pointerdown',function(e){
+    if(e.target===retry)return;
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    hit(e.timeStamp||performance.now());
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.repeat)return;
+    if(e.code==='Space'||e.code==='Enter'){e.preventDefault();if(state==='done'){if(performance.now()>lockUntil)reset()}else hit(e.timeStamp||performance.now())}
+  });
+  retry.addEventListener('click',function(e){e.stopPropagation();if(performance.now()>lockUntil)reset()});
+  area.addEventListener('contextmenu',function(e){e.preventDefault()});
+  addEventListener('resize',resize);
+  ['touchmove','wheel'].forEach(function(t){document.addEventListener(t,function(e){e.preventDefault()},{passive:false})});
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);
+  resize();
+})();
+</script>
+</body>
+</html>
